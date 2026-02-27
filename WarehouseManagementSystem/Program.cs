@@ -1,94 +1,220 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using System;
+using System.IO;
+using System.Threading.Tasks;
+using WarehouseManagementSystem.Data;
+using WarehouseManagementSystem.Services;
 
 namespace WarehouseManagementSystem
 {
-    internal class Program
+    class Program
     {
-        static void Main(string[] args)
+        static async Task Main(string[] args)
         {
-            Console.WriteLine("=== 仓储系统核心实体测试 ===");
+            Console.WriteLine("=== Day 2: 数据库集成与EF Core实战 ===");
             Console.WriteLine();
 
-            // 1. 实例化（创建）一个Product对象
-            Product myFirstProduct = new Product(); // new 关键字就是“创建”
-            myFirstProduct.Id = 1;
-            myFirstProduct.Name = "可口可乐 330ml 罐装";
-            myFirstProduct.Barcode = "6954767415688";
-            myFirstProduct.Price = 2.5m; // m 表示decimal类型
-            myFirstProduct.Quantity = 100;
-
-            // 2. 调用ToString方法并打印
-            Console.WriteLine("创建的第一个产品：");
-            Console.WriteLine(myFirstProduct.ToString()); // 显式调用
-            Console.WriteLine(myFirstProduct); // 隐式调用，效果相同
-            Console.WriteLine();
-
-            // 3. 调用方法，操作对象
-            Console.WriteLine("尝试出库操作：");
-            myFirstProduct.ReduceStock(10);  // 正常出库
-            myFirstProduct.ReduceStock(200); // 触发库存不足错误
-            Console.WriteLine();
-
-            // 4. 使用对象初始化器，更简洁地创建对象
-            Product secondProduct = new Product
+            try
             {
-                Id = 2,
-                Name = "康师傅红烧牛肉面",
-                Barcode = "6920152401013",
-                Price = 4.0m,
-                Quantity = 50
-            };
-            Console.WriteLine("创建的第二个产品：");
-            Console.WriteLine(secondProduct);
-            Console.WriteLine();
+                // 1. 配置依赖注入
+                var services = new ServiceCollection();
 
-            // 5. 创建仓库对象
-            Warehouse mainWarehouse = new Warehouse { Id = 1, Name = "总仓", Location = "北京" };
-            Console.WriteLine("创建的仓库：");
-            Console.WriteLine(mainWarehouse);
+                // 添加配置
+                var configuration = new ConfigurationBuilder()
+                    .SetBasePath(Directory.GetCurrentDirectory())
+                    .AddJsonFile("appsettings.json", optional: false)
+                    .Build();
 
-            Console.WriteLine();
-            Console.WriteLine("=== 上午任务完成！按任意键退出。 ===");
+                services.AddSingleton<IConfiguration>(configuration);
 
-            Console.WriteLine("\n=== 下午任务：内存仓库管理系统测试 ===");
-            Console.WriteLine();
+                // 添加DbContext
+                services.AddDbContext<WarehouseDbContext>(options =>
+                    options.UseSqlServer(configuration.GetConnectionString("WarehouseDb")));
 
-            // 1. 创建内存仓库
-            InMemoryWarehouse myWarehouse = new InMemoryWarehouse();
+                // 添加数据库仓储服务
+                services.AddScoped<IWarehouseService, DatabaseWarehouseService>();
 
-            // 2. 添加上午创建的产品
-            myWarehouse.AddProduct(myFirstProduct);
-            myWarehouse.AddProduct(secondProduct);
+                // 构建服务提供者
+                var serviceProvider = services.BuildServiceProvider();
 
-            // 3. 再添加一些新产品
-            myWarehouse.AddProduct(new Product { Id = 3, Name = "iPhone 16 Pro", Barcode = "888888", Price = 8999m, Quantity = 10 });
-            myWarehouse.AddProduct(new Product { Id = 4, Name = "华为 MateBook", Barcode = "999999", Price = 6999m, Quantity = 5 });
+                // 2. 测试数据库连接
+                using (var scope = serviceProvider.CreateScope())
+                {
+                    var dbContext = scope.ServiceProvider.GetRequiredService<WarehouseDbContext>();
 
-            Console.WriteLine("\n--- 打印所有产品 ---");
-            foreach (var product in myWarehouse.GetAllProducts())
+                    Console.WriteLine("正在测试数据库连接...");
+                    bool canConnect = await dbContext.Database.CanConnectAsync();
+
+                    if (canConnect)
+                    {
+                        Console.WriteLine("✅ 数据库连接成功！");
+                        Console.WriteLine($"数据库名称: {dbContext.Database.GetDbConnection().Database}");
+
+                        // 获取数据库统计信息
+                        var productCount = await dbContext.Products.CountAsync();
+                        var warehouseCount = await dbContext.Warehouses.CountAsync();
+                        var transactionCount = await dbContext.InventoryTransactions.CountAsync();
+
+                        Console.WriteLine($"📊 当前数据统计:");
+                        Console.WriteLine($"   产品数: {productCount}");
+                        Console.WriteLine($"   仓库数: {warehouseCount}");
+                        Console.WriteLine($"   流水记录: {transactionCount}");
+                        Console.WriteLine();
+                    }
+                    else
+                    {
+                        Console.WriteLine("❌ 数据库连接失败！");
+                        return;
+                    }
+                }
+
+                // 3. 测试数据库仓储服务
+                Console.WriteLine("=== 测试数据库仓储服务 ===");
+                Console.WriteLine();
+
+                using (var scope = serviceProvider.CreateScope())
+                {
+                    var dbService = scope.ServiceProvider.GetRequiredService<DatabaseWarehouseService>();
+
+                    // 测试1：获取所有产品
+                    Console.WriteLine("1. 获取所有产品列表:");
+                    var allProducts = await dbService.GetAllProductsAsync();
+                    foreach (var product in allProducts)
+                    {
+                        Console.WriteLine($"   - {product.Id}: {product.Name} (库存: {product.Quantity}, 价格: ¥{product.Price})");
+                    }
+                    Console.WriteLine();
+
+                    // 测试2：搜索产品
+                    Console.WriteLine("2. 搜索包含'可乐'的产品:");
+                    var searchResults = await dbService.SearchProductsAsync("可乐");
+                    foreach (var product in searchResults)
+                    {
+                        Console.WriteLine($"   - 找到: {product.Name} (条码: {product.Barcode})");
+                    }
+                    Console.WriteLine();
+
+                    // 测试3：获取低库存产品
+                    Console.WriteLine("3. 检查低库存产品(阈值<20):");
+                    var lowStockProducts = await dbService.GetLowStockProductsAsync(20);
+                    foreach (var product in lowStockProducts)
+                    {
+                        Console.WriteLine($"   - ⚠️ {product.Name} 库存仅剩 {product.Quantity}");
+                    }
+                    Console.WriteLine();
+
+                    // 测试4：模拟入库操作
+                    Console.WriteLine("4. 模拟产品入库操作:");
+                    Console.Write("   请输入要入库的产品ID (按Enter使用默认1): ");
+                    string input = Console.ReadLine();
+                    int productId = string.IsNullOrEmpty(input) ? 1 : int.Parse(input);
+
+                    Console.Write("   请输入入库数量 (按Enter使用默认10): ");
+                    input = Console.ReadLine();
+                    int quantity = string.IsNullOrEmpty(input) ? 10 : int.Parse(input);
+
+                    bool success = await dbService.StockInAsync(productId, 1, quantity, "TEST-IN-001", "测试入库");
+                    if (success)
+                    {
+                        Console.WriteLine("   ✅ 入库成功！");
+                        // 显示更新后的库存
+                        var updatedProduct = await dbService.GetProductByIdAsync(productId);
+                        Console.WriteLine($"   当前库存: {updatedProduct.Quantity}");
+                    }
+                    else
+                    {
+                        Console.WriteLine("   ❌ 入库失败！");
+                    }
+                    Console.WriteLine();
+
+                    // 测试5：模拟出库操作
+                    Console.WriteLine("5. 模拟产品出库操作:");
+                    Console.Write("   请输入要出库的产品ID (按Enter使用默认1): ");
+                    input = Console.ReadLine();
+                    productId = string.IsNullOrEmpty(input) ? 1 : int.Parse(input);
+
+                    Console.Write("   请输入出库数量 (按Enter使用默认5): ");
+                    input = Console.ReadLine();
+                    quantity = string.IsNullOrEmpty(input) ? 5 : int.Parse(input);
+
+                    success = await dbService.StockOutAsync(productId, 1, quantity, "TEST-OUT-001", "测试出库");
+                    if (success)
+                    {
+                        Console.WriteLine("   ✅ 出库成功！");
+                        var updatedProduct = await dbService.GetProductByIdAsync(productId);
+                        Console.WriteLine($"   当前库存: {updatedProduct.Quantity}");
+                    }
+                    else
+                    {
+                        Console.WriteLine("   ❌ 出库失败！库存可能不足。");
+                    }
+                    Console.WriteLine();
+
+                    // 测试6：查看最近流水记录
+                    Console.WriteLine("6. 最近5条库存流水记录:");
+                    var recentTransactions = await dbService.GetRecentTransactionsAsync(5);
+                    foreach (var transaction in recentTransactions)
+                    {
+                        string type = transaction.TransactionType == "IN" ? "📥 入库" : "📤 出库";
+                        Console.WriteLine($"   {type} - {transaction.Product?.Name} ×{transaction.Quantity} ({transaction.CreatedDate:HH:mm:ss})");
+                    }
+                    Console.WriteLine();
+
+                    // 测试7：添加新产品
+                    Console.WriteLine("7. 测试添加新产品:");
+                    var newProduct = new Models.Product
+                    {
+                        Name = "农夫山泉 550ml",
+                        Barcode = "6921168509256",
+                        Price = 2.00m,
+                        Quantity = 200,
+                        Category = "饮料",
+                        Description = "天然饮用水"
+                    };
+
+                    try
+                    {
+                        var addedProduct = await dbService.AddProductAsync(newProduct);
+                        Console.WriteLine($"   ✅ 新产品添加成功！ID: {addedProduct.Id}");
+
+                        // 验证添加
+                        var fetchedProduct = await dbService.GetProductByBarcodeAsync("6921168509256");
+                        Console.WriteLine($"   验证: {fetchedProduct.Name} 库存: {fetchedProduct.Quantity}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"   ❌ 添加失败: {ex.Message}");
+                    }
+                    Console.WriteLine();
+
+                    // 测试8：删除产品（软删除）
+                    Console.WriteLine("8. 测试删除产品:");
+                    Console.Write("   请输入要删除的产品ID (按Enter跳过): ");
+                    input = Console.ReadLine();
+
+                    if (!string.IsNullOrEmpty(input))
+                    {
+                        productId = int.Parse(input);
+                        success = await dbService.DeleteProductAsync(productId);
+                        Console.WriteLine(success ? "   ✅ 产品已标记为删除" : "   ❌ 删除失败，产品可能不存在");
+                    }
+
+                    Console.WriteLine();
+                }
+
+                Console.WriteLine("=== 数据库测试完成 ===");
+                Console.WriteLine();
+            }
+            catch (Exception ex)
             {
-                Console.WriteLine($"  - {product}");
+                Console.WriteLine($"❌ 发生错误: {ex.Message}");
+                Console.WriteLine($"详细信息: {ex}");
             }
 
-            Console.WriteLine("\n--- 搜索名称包含‘可乐’的产品 ---");
-            var searchResults = myWarehouse.SearchProductsByName("可乐");
-            foreach (var p in searchResults)
-            {   
-                Console.WriteLine($"  - 找到：{p.Name}");
-            }
-
-            Console.WriteLine("\n--- 更新ID为2的产品的库存 ---");
-            myWarehouse.UpdateProductStock(2, 999); // 把泡面库存改成999
-
-            Console.WriteLine("\n--- 尝试删除一个产品，再打印所有产品 ---");
-            myWarehouse.RemoveProduct(1); // 删除可乐
-            Console.WriteLine("当前库存清单：");
-            foreach (var product in myWarehouse.GetAllProducts())
-            {
-                Console.WriteLine($"  - {product}");
-            }
-            Console.ReadKey(); // 等待用户按键，防止窗口一闪而过
+            Console.WriteLine("按任意键退出...");
+            Console.ReadKey();
         }
     }
 }
